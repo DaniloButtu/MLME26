@@ -138,7 +138,9 @@ def main():
     model.load_state_dict(state_dict, strict=False)
     print("Local model weights LOADED successfully.")
 
-    
+    all_logits_to_save = []
+    all_gts_to_save = []
+
     # INFERENCE & EVALUATION LOOP
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         # 1. Apro l'immagine con PIL
@@ -248,10 +250,12 @@ def main():
         else:
              ood_gts_list.append(ood_gts)
              anomaly_score_list.append(anomaly_result)
-             
+
+        all_logits_to_save.append(result.squeeze(0).cpu().numpy())
+        all_gts_to_save.append(ood_gts.astype(np.uint8))
         del anomaly_result, ood_gts, mask, img_tensor, img_pil, img_np
         torch.cuda.empty_cache()
-
+    
     file.write( "\n")
 
     if not ood_gts_list:
@@ -271,9 +275,12 @@ def main():
 
     print(f'AUPRC score: {prc_auc*100.0}')
     print(f'FPR@TPR95: {fpr*100.0}')
-
     file.write((str(args.method) + '    AUPRC score:' + str(prc_auc*100.0) + '   FPR@TPR95:' + str(fpr*100.0) ))
     file.close()
 
+    np.save("logits_dump.npy", np.array(all_logits_to_save))
+    np.save("gts_dump.npy", np.array(all_gts_to_save))
+    print("Salvataggio completato! Ora puoi usare questi file per la Temperature Scaling.")
+    
 if __name__ == '__main__':
     main()
