@@ -45,12 +45,11 @@ def main():
     parser = ArgumentParser()
     parser.add_argument(
         "--input",
-        default="/home/shyam/Mask2Former/unk-eval/RoadObsticle21/images/*.webp",
         nargs="+",
         help="A list of space separated input images; "
         "or a single glob pattern such as 'directory/*.jpg'",
     )  
-    parser.add_argument('--loadDir',default="/content/drive/MyDrive/ML/trained_models/")
+    parser.add_argument('--loadDir',default="/content/MLME26/trained_models/")
     parser.add_argument('--loadWeights', default="erfnet_pretrained.pth")
     parser.add_argument('--loadModel', default="erfnet.py")
     parser.add_argument('--method', default='msp', choices=['msp', 'max_logit', 'max_entropy'])
