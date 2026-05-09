@@ -130,7 +130,7 @@ def main():
             cv2.imwrite(debug_name, heatmap_img)
             print(f"\n--- MAPPA DI DEBUG SALVATA COME {debug_name} ---")
             print("Guardala per capire cosa la rete sta marcando come anomalia!\n")
-        ################################################################################################################
+        #################################################################################################################
 
         pathGT = path.replace("images", "labels_masks")                
         if "RoadObsticle21" in pathGT:
