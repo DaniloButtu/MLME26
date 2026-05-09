@@ -104,7 +104,7 @@ def main():
 
 
     # LOAD LOCAL WEIGHTS ONLY
-    local_bin = "drive/MyDrive/ML/eomt/bin/eomt_cityscapes.bin"
+    local_bin = "/content/MLME26/eomt/bin/eomt_cityscapes.bin"
     print(f"Loading local weights from: {local_bin}")
 
     # Instantiate the model
