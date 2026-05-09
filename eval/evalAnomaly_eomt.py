@@ -262,18 +262,10 @@ def main():
     ood_gts = np.array(ood_gts_list)
     anomaly_scores = np.array(anomaly_score_list)
 
-    ood_mask = (ood_gts == 1)
-    ind_mask = (ood_gts == 0)
-
-    ood_out = anomaly_scores[ood_mask]
-    ind_out = anomaly_scores[ind_mask]
-
-    ood_label = np.ones(len(ood_out))
-    ind_label = np.zeros(len(ind_out))
+    valid_mask = (ood_gts == 0) | (ood_gts == 1)
+    val_out = anomaly_scores[valid_mask]
+    val_label = ood_gts[valid_mask]
     
-    val_out = np.concatenate((ind_out, ood_out))
-    val_label = np.concatenate((ind_label, ood_label))
-
     prc_auc = average_precision_score(val_label, val_out)
     fpr = fpr_at_95_tpr(val_out, val_label)
 
