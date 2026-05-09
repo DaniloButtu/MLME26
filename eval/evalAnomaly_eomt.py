@@ -251,7 +251,7 @@ def main():
              ood_gts_list.append(ood_gts)
              anomaly_score_list.append(anomaly_result)
 
-        all_logits_to_save.append(result.squeeze(0).cpu().numpy())
+        all_logits_to_save.append(logits.squeeze(0).cpu().numpy())
         all_gts_to_save.append(ood_gts.astype(np.uint8))
         del anomaly_result, ood_gts, mask, img_tensor, img_pil, img_np
         torch.cuda.empty_cache()
@@ -281,6 +281,6 @@ def main():
     np.save("logits_dump.npy", np.array(all_logits_to_save))
     np.save("gts_dump.npy", np.array(all_gts_to_save))
     print("Salvataggio completato! Ora puoi usare questi file per la Temperature Scaling.")
-    
+
 if __name__ == '__main__':
     main()
