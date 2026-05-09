@@ -68,7 +68,7 @@ class ZipCityscapesDataset(Dataset):
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument('--loadDir', default='/content/drive/MyDrive/ML/trained_models/')
+    parser.add_argument('--loadDir', default='/content/MLME26/trained_models/')
     parser.add_argument('--loadWeights', default='erfnet_pretrained.pth')
     parser.add_argument('--img-zip', required=True,
                         help='Percorso al file ZIP delle immagini (leftImg8bit_trainvaltest.zip)')
