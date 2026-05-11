@@ -18,7 +18,6 @@ from lightning import seed_everything
 
 from ood_metrics import fpr_at_95_tpr, calc_metrics, plot_roc, plot_pr, plot_barcode
 from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve, average_precision_score
-import h5py
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
@@ -40,14 +39,6 @@ NUM_CLASSES = 19
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
-# Rimuovi val_out_list e val_label_list
-# Apriamo il file HDF5 in scrittura
-hf = h5py.File("val_data.h5", 'w')
-
-# Creiamo i dataset estendibili (maxshape=None permette di ingrandirli all'infinito)
-# Assumiamo NUM_CLASSES = 19
-dset_logits = hf.create_dataset('logits', shape=(0, NUM_CLASSES-1), maxshape=(None, NUM_CLASSES), dtype='float32')
-dset_labels = hf.create_dataset('labels', shape=(0,), maxshape=(None,), dtype='uint8')
 
 def main():
     parser = ArgumentParser()
@@ -57,7 +48,7 @@ def main():
         help="A list of space separated input images; "
         "or a single glob pattern such as 'directory/*.jpg'",
     )  
-    parser.add_argument('--config_path', default="/content/drive/MyDrive/ML/eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml", help="Path to yaml config file")
+    parser.add_argument('--config_path', default="/content/MLME26/eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml", help="Path to yaml config file")
     parser.add_argument('--subset', default="val")  # can be val or train (must have labels)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
@@ -65,8 +56,8 @@ def main():
     parser.add_argument('--cpu', action='store_true')
     args = parser.parse_args()
     
-    val_out_list = []
-    val_label_list = []
+    anomaly_score_list = []
+    ood_gts_list = []
 
     if not os.path.exists('results.txt'):
         open('results.txt', 'w').close()
@@ -113,7 +104,7 @@ def main():
 
 
     # LOAD LOCAL WEIGHTS ONLY
-    local_bin = "/content/drive/MyDrive/ML/eomt/bin/eomt_cityscapes.bin"
+    local_bin = "/content/drive/MyDrive/utils_MLME26/bin/eomt_cityscapes.bin"
     print(f"Loading local weights from: {local_bin}")
 
     # Instantiate the model
@@ -147,6 +138,8 @@ def main():
     model.load_state_dict(state_dict, strict=False)
     print("Local model weights LOADED successfully.")
 
+    all_logits_to_save = []
+    all_gts_to_save = []
 
     # INFERENCE & EVALUATION LOOP
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
@@ -215,7 +208,7 @@ def main():
               raise ValueError(f"Unknown method: {args.method}")
             anomaly_result = anomaly_map
         
-            if len(val_label_list) == 1000000: 
+            if len(ood_gts_list) == 0: 
               print(path)
               map_normalized = cv2.normalize(anomaly_map, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
               heatmap_img = cv2.applyColorMap(map_normalized, cv2.COLORMAP_JET)
@@ -253,34 +246,41 @@ def main():
             ood_gts = np.where((ood_gts==255), 1, ood_gts)
 
         if 1 not in np.unique(ood_gts):
-            continue 
-
+            continue              
         else:
-            # Estrai solo i pixel validi (0 e 1)
-            valid_mask = (ood_gts == 0) | (ood_gts == 1)
-            logits_hwc = logits_no_void.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            
-            valid_logits = logits_hwc[valid_mask]
-            valid_labels = ood_gts[valid_mask]
+             ood_gts_list.append(ood_gts)
+             anomaly_score_list.append(anomaly_result)
 
-            # Scrivi DIRETTAMENTE SUL DISCO senza intaccare la RAM
-            if valid_logits.shape[0] > 0:
-                curr_size = dset_logits.shape[0]
-                # Ingrandisci il dataset sul disco
-                dset_logits.resize(curr_size + valid_logits.shape[0], axis=0)
-                dset_labels.resize(curr_size + valid_labels.shape[0], axis=0)
-                
-                # Inserisci i nuovi dati
-                dset_logits[curr_size:] = valid_logits
-                dset_labels[curr_size:] = valid_labels
-
-        del anomaly_result, ood_gts, mask, img_tensor, img_pil, img_np, valid_mask, valid_logits, valid_labels
+        all_logits_to_save.append(logits.squeeze(0).cpu().numpy())
+        all_gts_to_save.append(ood_gts.astype(np.uint8))
+        del anomaly_result, ood_gts, mask, img_tensor, img_pil, img_np
         torch.cuda.empty_cache()
+    
     file.write( "\n")
 
-    print(f"Salvataggio completato su HDF5! Totale pixel estratti: {dset_logits.shape[0]}")
-    hf.close()
+    if not ood_gts_list:
+        print("No valid Ground Truths found.")
+        file.close()
+        return
+
+    ood_gts = np.array(ood_gts_list)
+    anomaly_scores = np.array(anomaly_score_list)
+
+    valid_mask = (ood_gts == 0) | (ood_gts == 1)
+    val_out = anomaly_scores[valid_mask]
+    val_label = ood_gts[valid_mask]
+    
+    prc_auc = average_precision_score(val_label, val_out)
+    fpr = fpr_at_95_tpr(val_out, val_label)
+
+    print(f'AUPRC score: {prc_auc*100.0}')
+    print(f'FPR@TPR95: {fpr*100.0}')
+    file.write((str(args.method) + '    AUPRC score:' + str(prc_auc*100.0) + '   FPR@TPR95:' + str(fpr*100.0) ))
     file.close()
+
+    np.save("logits_dump.npy", np.array(all_logits_to_save))
+    np.save("gts_dump.npy", np.array(all_gts_to_save))
+    print("Salvataggio completato! Ora puoi usare questi file per la Temperature Scaling.")
 
 if __name__ == '__main__':
     main()
