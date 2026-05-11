@@ -247,7 +247,7 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/content/MLME26/eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml")
-    parser.add_argument("--ckpt", default="/content/MLME26/eomt/bin/eomt_cityscapes.bin")
+    parser.add_argument("--ckpt", default="/content/drive/MyDrive/utils_MLME26/bin/eomt_cityscapes.bin")
     parser.add_argument("--train_img_dir", required=True)
     parser.add_argument("--train_mask_dir", required=True)
     parser.add_argument("--val_img_dir", required=True)
