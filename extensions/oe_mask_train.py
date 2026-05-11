@@ -18,25 +18,20 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import TensorBoardLogger
 from PIL import Image
 import numpy as np
+import torchvision.ops as ops
 
-# Aggancia i moduli EoMT già presenti nel progetto
 project_root = "/content/MLME26"
 sys.path.append(project_root)
-# Necessario per risolvere gli import assoluti interni di EoMT (es. "training.xxx")
 sys.path.append(os.path.join(project_root, "eomt"))
 
 from eomt.datasets.transforms import Transforms
 from eomt.training.mask_classification_semantic import MaskClassificationSemantic
 
-# Costanti
-NEW_NUM_CLASSES = 20          # 19 classi Cityscapes originali + classe 19 = anomalia
+NEW_NUM_CLASSES = 20
 ANOMALY_CLASS = 19
 IGNORE_INDEX = 255
 
 
-# ----------------------------------------------------------------------
-# Dataset – carica immagini e maschere con anomalia = 19
-# ----------------------------------------------------------------------
 class AnomalyDataset(torch.utils.data.Dataset):
     def __init__(self, img_dir, mask_dir, img_size=(640, 640)):
         self.img_dir = Path(img_dir)
@@ -57,14 +52,11 @@ class AnomalyDataset(torch.utils.data.Dataset):
         img = Image.open(self.img_paths[idx]).convert("RGB")
         mask = Image.open(self.mask_paths[idx])
 
-        # Ridimensioniamo a 640x640 (bilineare per immagine, nearest per maschera)
         img = img.resize(self.img_size, Image.BILINEAR)
         mask = mask.resize(self.img_size, Image.NEAREST)
 
-        img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float()
         mask_np = np.array(mask).astype(np.int64)
 
-        # Converti la maschera semantica nel formato panottico EoMT
         masks, labels = [], []
         for lbl in np.unique(mask_np):
             if lbl == IGNORE_INDEX:
@@ -73,13 +65,9 @@ class AnomalyDataset(torch.utils.data.Dataset):
             masks.append(torch.from_numpy(binary))
             labels.append(torch.tensor(lbl, dtype=torch.long))
 
-        # Il target include anche eventuali maschere di anomalia (lbl=19)
-        return img_tensor, {"masks": masks, "labels": labels}
+        return img, {"masks": masks, "labels": labels}
 
 
-# ----------------------------------------------------------------------
-# DataModule con le stesse augmentations di EoMT
-# ----------------------------------------------------------------------
 class AnomalyDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -115,6 +103,26 @@ class AnomalyDataModule(pl.LightningDataModule):
             self.val_img_dir, self.val_mask_dir, self.img_size
         )
 
+    @staticmethod
+    def _prepare_target_dict(tgt, img_shape):
+        masks_list = tgt["masks"]
+        labels_list = tgt["labels"]
+        if len(masks_list) == 0:
+            masks_tensor = torch.empty((0, *img_shape), dtype=torch.bool)
+            boxes = torch.empty((0, 4), dtype=torch.float32)
+            labels_tensor = torch.empty(0, dtype=torch.long)
+        else:
+            masks_tensor = torch.stack(masks_list)
+            boxes = ops.masks_to_boxes(masks_tensor)
+            labels_tensor = torch.stack(labels_list)
+        is_crowd = torch.zeros(len(masks_list), dtype=torch.bool)
+        return {
+            "masks": masks_tensor,
+            "boxes": boxes,
+            "labels": labels_tensor,
+            "is_crowd": is_crowd,
+        }
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
@@ -138,31 +146,52 @@ class AnomalyDataModule(pl.LightningDataModule):
 
     def _train_collate(self, batch):
         imgs, targets = zip(*batch)
-        imgs = torch.stack(imgs)
-        # Applica le trasformazioni EoMT (scaling, jitter) su ogni elemento
+        transformed_imgs = []
         transformed_targets = []
         for img, tgt in zip(imgs, targets):
-            tgt["is_crowd"] = [False] * len(tgt["labels"])
-            _, masks_t, labels_t = self.transforms(img, tgt["masks"], tgt["labels"])
-            transformed_targets.append({"masks": masks_t, "labels": labels_t})
-        return imgs, transformed_targets
+            img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float()
+            target_dict = self._prepare_target_dict(tgt, img_tensor.shape[-2:])
+            img_transformed, target_dict = self.transforms(img_tensor, target_dict)
+            transformed_imgs.append(img_transformed)
+            transformed_targets.append({
+                "masks": target_dict["masks"],
+                "labels": target_dict["labels"],
+                "boxes": target_dict["boxes"],
+            })
+        return torch.stack(transformed_imgs), transformed_targets
 
     def _eval_collate(self, batch):
         imgs, targets = zip(*batch)
-        imgs = torch.stack(imgs)
-        return imgs, list(targets)
+        val_imgs = []
+        proc_targets = []
+        for img, tgt in zip(imgs, targets):
+            np_img = np.array(img)
+            tensor_img = torch.from_numpy(np_img).permute(2, 0, 1).to(torch.uint8)
+            val_imgs.append(tensor_img)
+
+            masks_list = tgt["masks"]
+            labels_list = tgt["labels"]
+            if len(masks_list) == 0:
+                masks_tensor = torch.empty((0, *tensor_img.shape[-2:]), dtype=torch.bool)
+                labels_tensor = torch.empty(0, dtype=torch.long)
+                boxes = torch.empty((0, 4), dtype=torch.float32)
+            else:
+                masks_tensor = torch.stack(masks_list)
+                labels_tensor = torch.stack(labels_list)
+                boxes = ops.masks_to_boxes(masks_tensor)
+            proc_targets.append({
+                "masks": masks_tensor,
+                "labels": labels_tensor,
+                "boxes": boxes,
+            })
+        return torch.stack(val_imgs), proc_targets
 
 
-# ----------------------------------------------------------------------
-# Costruzione del modello (20 classi, senza testa di classificazione)
-# ----------------------------------------------------------------------
 def import_class(class_path: str):
-    """Importa dinamicamente una classe dato il percorso punto (es. 'models.vit.ViT')."""
     module_name, class_name = class_path.rsplit('.', 1)
     try:
         mod = importlib.import_module(module_name)
     except ModuleNotFoundError:
-        # Prova con il prefisso 'eomt.' se il modulo non viene trovato
         module_name = 'eomt.' + module_name
         mod = importlib.import_module(module_name)
     return getattr(mod, class_name)
@@ -172,24 +201,21 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Encoder
     enc_cfg = config["model"]["init_args"]["network"]["init_args"]["encoder"]
     EncoderCls = import_class(enc_cfg["class_path"])
     img_size = config.get("data", {}).get("init_args", {}).get("img_size", (640, 640))
     encoder = EncoderCls(img_size=img_size, **enc_cfg.get("init_args", {}))
 
-    # Network
     net_cfg = config["model"]["init_args"]["network"]
     NetCls = import_class(net_cfg["class_path"])
     net_kwargs = {k: v for k, v in net_cfg["init_args"].items() if k != "encoder"}
     network = NetCls(
         masked_attn_enabled=False,
-        num_classes=NEW_NUM_CLASSES,    # 20
+        num_classes=NEW_NUM_CLASSES,
         encoder=encoder,
         **net_kwargs,
     )
 
-    # Lightning module
     LitCls = import_class(config["model"]["class_path"])
     model_kwargs = {k: v for k, v in config["model"]["init_args"].items() if k != "network"}
     if "stuff_classes" in config["data"].get("init_args", {}):
@@ -208,7 +234,6 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
         **model_kwargs,
     )
 
-    # Carica i pesi pre‑addestrati saltando la testa di classificazione
     state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     if "state_dict" in state:
         state = state["state_dict"]
@@ -217,7 +242,7 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
         for k, v in state.items()
         if not any(part in k for part in ["class_head", "class_predictor", "criterion.empty_weight"])
     }
-    # Interpolazione pos_embed se necessario
+
     pos_key = "network.encoder.backbone.pos_embed"
     if pos_key in filtered:
         ckpt_pos = filtered[pos_key]
@@ -236,14 +261,9 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
     print("Chiavi mancanti (head):", missing)
     print("Chiavi inattese:", unexpected)
 
-    # Opzionale: pesa di più la classe 19 per compensare uno sbilanciamento
-    # model.criterion.empty_weight[19] = 5.0
     return model
 
 
-# ----------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/content/MLME26/eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml")
