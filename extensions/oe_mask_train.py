@@ -215,7 +215,7 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
     filtered = {
         k: v
         for k, v in state.items()
-        if not any(part in k for part in ["class_head", "class_predictor"])
+        if not any(part in k for part in ["class_head", "class_predictor", "criterion.empty_weight"])
     }
     # Interpolazione pos_embed se necessario
     pos_key = "network.encoder.backbone.pos_embed"
