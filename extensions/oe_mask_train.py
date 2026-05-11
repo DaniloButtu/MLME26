@@ -1,9 +1,6 @@
-#!/usr/bin/env python3
-"""
-Outlier Exposure a livello di maschera per EoMT.
-Aggiunge la classe 19 come "anomalia" e addestra il modello a rifiutare
-intere maschere corrispondenti a oggetti COCO incollati.
-"""
+#Outlier Exposure a livello di maschera per EoMT.
+#Aggiunge la classe 19 come "anomalia" e addestra il modello a rifiutare
+#intere maschere corrispondenti a oggetti COCO incollati.
 
 import os
 import sys
@@ -24,12 +21,9 @@ import numpy as np
 # Aggancia i moduli EoMT già presenti nel progetto
 project_root = "/content/MLME26"
 sys.path.append(project_root)
-sys.path.append(os.path.join(project_root, "eomt"))
-sys.path.append(os.path.join(project_root, "eomt/training"))
-sys.path.append(os.path.join(project_root, "eomt/datasets"))
 
-from datasets.transforms import Transforms
-from training.mask_classification_semantic import MaskClassificationSemantic
+from eomt.datasets.transforms import Transforms
+from eomt.training.mask_classification_semantic import MaskClassificationSemantic
 
 # Costanti
 NEW_NUM_CLASSES = 20          # 19 classi Cityscapes originali + classe 19 = anomalia
