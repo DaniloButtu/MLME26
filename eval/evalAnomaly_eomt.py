@@ -48,7 +48,7 @@ def main():
         help="A list of space separated input images; "
         "or a single glob pattern such as 'directory/*.jpg'",
     )  
-    parser.add_argument('--config_path', default="/content/drive/MyDrive/utils_MLME26/bin/eomt_cityscapes.bin", help="Path to yaml config file")
+    parser.add_argument('--config_path', default="/content/MLME26/eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml", help="Path to yaml config file")
     parser.add_argument('--subset', default="val")  # can be val or train (must have labels)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
