@@ -6,6 +6,7 @@ import os
 import sys
 import math
 import argparse
+import importlib
 from pathlib import Path
 
 import yaml
@@ -155,21 +156,31 @@ class AnomalyDataModule(pl.LightningDataModule):
 # ----------------------------------------------------------------------
 # Costruzione del modello (20 classi, senza testa di classificazione)
 # ----------------------------------------------------------------------
+def import_class(class_path: str):
+    """Importa dinamicamente una classe dato il percorso punto (es. 'models.vit.ViT')."""
+    module_name, class_name = class_path.rsplit('.', 1)
+    try:
+        mod = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        # Prova con il prefisso 'eomt.' se il modulo non viene trovato
+        module_name = 'eomt.' + module_name
+        mod = importlib.import_module(module_name)
+    return getattr(mod, class_name)
+
+
 def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
     # Encoder
     enc_cfg = config["model"]["init_args"]["network"]["init_args"]["encoder"]
-    enc_mod, enc_cls = enc_cfg["class_path"].rsplit(".", 1)
-    EncoderCls = getattr(sys.modules[enc_mod], enc_cls)
+    EncoderCls = import_class(enc_cfg["class_path"])
     img_size = config.get("data", {}).get("init_args", {}).get("img_size", (640, 640))
     encoder = EncoderCls(img_size=img_size, **enc_cfg.get("init_args", {}))
 
     # Network
     net_cfg = config["model"]["init_args"]["network"]
-    net_mod, net_cls = net_cfg["class_path"].rsplit(".", 1)
-    NetCls = getattr(sys.modules[net_mod], net_cls)
+    NetCls = import_class(net_cfg["class_path"])
     net_kwargs = {k: v for k, v in net_cfg["init_args"].items() if k != "encoder"}
     network = NetCls(
         masked_attn_enabled=False,
@@ -179,8 +190,7 @@ def build_model(config_path, ckpt_path, lr=1e-4, load_class_head=False):
     )
 
     # Lightning module
-    lit_mod, lit_cls = config["model"]["class_path"].rsplit(".", 1)
-    LitCls = getattr(sys.modules[lit_mod], lit_cls)
+    LitCls = import_class(config["model"]["class_path"])
     model_kwargs = {k: v for k, v in config["model"]["init_args"].items() if k != "network"}
     if "stuff_classes" in config["data"].get("init_args", {}):
         model_kwargs["stuff_classes"] = config["data"]["init_args"]["stuff_classes"]
