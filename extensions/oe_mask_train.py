@@ -21,6 +21,8 @@ import numpy as np
 # Aggancia i moduli EoMT già presenti nel progetto
 project_root = "/content/MLME26"
 sys.path.append(project_root)
+# Necessario per risolvere gli import assoluti interni di EoMT (es. "training.xxx")
+sys.path.append(os.path.join(project_root, "eomt"))
 
 from eomt.datasets.transforms import Transforms
 from eomt.training.mask_classification_semantic import MaskClassificationSemantic
