@@ -204,7 +204,8 @@ def main():
               anomaly_map = entropy.squeeze(0).cpu().numpy()
         
             elif args.method == "rba":
-              anomaly_map = void_probs
+               tanh_sum = np.sum(np.tanh(logits_no_void.squeeze(0).cpu().numpy()), axis=0)
+               anomaly_map =  -tanh_sum   # higher value = more anomalous
 
         
             else:
