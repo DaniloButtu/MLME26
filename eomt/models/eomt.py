@@ -23,12 +23,14 @@ class EoMT(nn.Module):
         num_q,
         num_blocks=4,
         masked_attn_enabled=True,
+        anomaly_head_enabled=False,  # set True only for the anomaly-classification config
     ):
         super().__init__()
         self.encoder = encoder
         self.num_q = num_q
         self.num_blocks = num_blocks
         self.masked_attn_enabled = masked_attn_enabled
+        self.anomaly_head_enabled = anomaly_head_enabled
 
         self.register_buffer("attn_mask_probs", torch.ones(num_blocks))
 
@@ -44,6 +46,17 @@ class EoMT(nn.Module):
             nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
         )
 
+        # anomaly_head is only built when anomaly_head_enabled=True.
+        # Using it with eomt_base_640.yaml would add ~3 M extra parameters for nothing.
+        if self.anomaly_head_enabled:
+            self.anomaly_head = nn.Sequential(
+                nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
+                nn.GELU(),
+                nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
+                nn.GELU(),
+                nn.Linear(self.encoder.backbone.embed_dim, 1),
+            )
+
         patch_size = encoder.backbone.patch_embed.patch_size
         max_patch_size = max(patch_size[0], patch_size[1])
         num_upscale = max(1, int(math.log2(max_patch_size)) - 2)
@@ -57,16 +70,32 @@ class EoMT(nn.Module):
 
         class_logits = self.class_head(q)
 
-        x = x[:, self.num_q + self.encoder.backbone.num_prefix_tokens :, :]
-        x = x.transpose(1, 2).reshape(
-            x.shape[0], -1, *self.encoder.backbone.patch_embed.grid_size
+        patch_tokens = x[:, self.num_q + self.encoder.backbone.num_prefix_tokens :, :]
+
+        # 1. Reshape patch tokens to a spatial grid (B, embed_dim, H_grid, W_grid)
+        x_spatial = patch_tokens.transpose(1, 2).reshape(
+            patch_tokens.shape[0], -1, *self.encoder.backbone.patch_embed.grid_size
         )
 
+        # 2. Upscale features (preserves embed_dim, doubles spatial resolution per block)
+        upscaled_x = self.upscale(x_spatial)
+
+        # 3. Mask logits: dot-product of query embeddings and upscaled patch features
+        #    output shape: (B, num_q, H_up, W_up)
         mask_logits = torch.einsum(
-            "bqc, bchw -> bqhw", self.mask_head(q), self.upscale(x)
+            "bqc, bchw -> bqhw", self.mask_head(q), upscaled_x
         )
 
-        return mask_logits, class_logits
+        # 4. Anomaly logits (only when the head exists)
+        #    Run upscaled_x through a per-pixel MLP -> (B, 1, H_up, W_up)
+        if self.anomaly_head_enabled:
+            upscaled_x_permuted = upscaled_x.permute(0, 2, 3, 1)  # (B, H, W, C)
+            anomaly_logits = self.anomaly_head(upscaled_x_permuted)  # (B, H, W, 1)
+            anomaly_logits = anomaly_logits.permute(0, 3, 1, 2)       # (B, 1, H, W)
+        else:
+            anomaly_logits = None  # head not built; caller must check before using
+
+        return mask_logits, class_logits, anomaly_logits
 
     @torch.compiler.disable
     def _disable_attn_mask(self, attn_mask, prob):
@@ -160,7 +189,7 @@ class EoMT(nn.Module):
             x = self.encoder.backbone._pos_embed(x)
 
         attn_mask = None
-        mask_logits_per_layer, class_logits_per_layer = [], []
+        mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer = [], [], []
 
         for i, block in enumerate(self.encoder.backbone.blocks):
             if i == len(self.encoder.backbone.blocks) - self.num_blocks:
@@ -172,9 +201,11 @@ class EoMT(nn.Module):
                 self.masked_attn_enabled
                 and i >= len(self.encoder.backbone.blocks) - self.num_blocks
             ):
-                mask_logits, class_logits = self._predict(self.encoder.backbone.norm(x))
+                mask_logits, class_logits, anomaly_logits = self._predict(self.encoder.backbone.norm(x))
                 mask_logits_per_layer.append(mask_logits)
                 class_logits_per_layer.append(class_logits)
+                # anomaly_logits is None when anomaly_head_enabled=False
+                anomaly_logits_per_layer.append(anomaly_logits)
 
                 attn_mask = self._attn_mask(x, mask_logits, i)
 
@@ -194,11 +225,13 @@ class EoMT(nn.Module):
             elif hasattr(block, "layer_scale2"):
                 x = x + block.layer_scale2(mlp_out)
 
-        mask_logits, class_logits = self._predict(self.encoder.backbone.norm(x))
+        mask_logits, class_logits, anomaly_logits = self._predict(self.encoder.backbone.norm(x))
         mask_logits_per_layer.append(mask_logits)
         class_logits_per_layer.append(class_logits)
+        anomaly_logits_per_layer.append(anomaly_logits)
 
         return (
             mask_logits_per_layer,
             class_logits_per_layer,
+            anomaly_logits_per_layer,
         )

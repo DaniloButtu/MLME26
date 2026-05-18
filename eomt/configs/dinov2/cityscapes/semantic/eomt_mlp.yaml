@@ -1,0 +1,122 @@
+# lightning.pytorch==2.5.1.post0
+seed_everything: 0
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  num_nodes: 1
+  precision: 16-mixed
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      name: cityscapes_semantic_eomt_base_640
+      save_dir: .
+      version: null
+      offline: false
+      dir: null
+      id: hdacek0x
+      anonymous: null
+      project: eomt
+      log_model: false
+      experiment: null
+      prefix: ''
+      checkpoint_name: null
+      entity: null
+      notes: null
+      tags: null
+      config: null
+      config_exclude_keys: null
+      config_include_keys: null
+      allow_val_change: null
+      group: null
+      job_type: null
+      mode: null
+      force: null
+      reinit: null
+      resume: allow
+      resume_from: null
+      fork_from: null
+      save_code: null
+      tensorboard: null
+      sync_tensorboard: null
+      monitor_gym: null
+      settings: null
+  callbacks: null
+  fast_dev_run: false
+  max_epochs: 50
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: null
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 8
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+  model_registry: null
+model:
+  class_path: eomt.training.anomaly_classification.AnomalyClassificationModule
+  init_args:
+    network:
+      class_path: eomt.models.eomt.EoMT
+      init_args:
+        encoder:
+          class_path: eomt.models.vit.ViT
+          init_args:
+            img_size:
+            - 1024
+            - 1024
+            patch_size: 16
+            backbone_name: vit_base_patch14_reg4_dinov2
+            ckpt_path: null
+        num_classes: 19
+        num_q: 100
+        num_blocks: 3
+        masked_attn_enabled: true
+        anomaly_head_enabled: true   # build the anomaly MLP head for anomaly detection training
+    lr: 0.0001
+    weight_decay: 0.05
+    ckpt_path: ./eomt/bin/eomt_cityscapes.bin
+    img_size:
+    - 1024
+    - 1024
+    anomaly_class_idx: 19
+data:
+  class_path: eomt.datasets.anomaly_dataset.AnomalyDataModule
+  init_args:
+    path: ./anomaly_training
+    batch_size: 1
+    num_workers: 4
+    img_size:
+    - 1024
+    - 2048
+    num_classes: 19
+    color_jitter_enabled: true
+    scale_range:
+    - 0.5
+    - 2.0
+    check_empty_targets: true
+optimizer: null
+lr_scheduler: null
+ckpt_path: ./eomt/hdacek0x/checkpoints/epoch=32-step=3300.ckpt

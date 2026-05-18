@@ -113,8 +113,10 @@ class LightningModule(lightning.LightningModule):
         ).tolist()
 
         for name, param in reversed(list(self.named_parameters())):
-            lr = self.lr
+            if not param.requires_grad:
+                continue
 
+            lr = self.lr
             if name.replace("network.encoder.backbone.", "") in encoder_param_names:
                 name_list = name.split(".")
 
@@ -176,8 +178,8 @@ class LightningModule(lightning.LightningModule):
     def training_step(self, batch, batch_idx):
         imgs, targets = batch
 
-        mask_logits_per_block, class_logits_per_block = self(imgs)
-
+        mask_logits_per_block, class_logits_per_block, anomaly_logits_per_block = self(imgs)
+        
         losses_all_blocks = {}
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
@@ -902,6 +904,11 @@ class LightningModule(lightning.LightningModule):
                 ]
             else:
                 missing_keys = incompatible_keys.missing_keys
+            missing_keys = [
+                key
+                for key in missing_keys
+                if "anomaly_head" not in key
+            ]
             if missing_keys:
                 raise ValueError(f"Missing keys: {missing_keys}")
         if incompatible_keys.unexpected_keys:

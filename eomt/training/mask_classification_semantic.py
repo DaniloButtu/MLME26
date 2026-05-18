@@ -41,6 +41,7 @@ class MaskClassificationSemantic(LightningModule):
         ckpt_path: Optional[str] = None,
         delta_weights: bool = False,
         load_ckpt_class_head: bool = True,
+        train_only_anomaly_head: bool = False,
     ):
         super().__init__(
             network=network,
@@ -80,7 +81,14 @@ class MaskClassificationSemantic(LightningModule):
         )
 
         self.init_metrics_semantic(ignore_idx, self.network.num_blocks + 1 if self.network.masked_attn_enabled else 1)
-
+        
+        if train_only_anomaly_head:
+            import logging
+            logging.info("Freezing all layers except the anomaly_head...")
+            for name, param in self.named_parameters():
+                if "anomaly_head" not in name:
+                    param.requires_grad = False
+                    
     def eval_step(
         self,
         batch,
@@ -91,8 +99,8 @@ class MaskClassificationSemantic(LightningModule):
 
         img_sizes = [img.shape[-2:] for img in imgs]
         crops, origins = self.window_imgs_semantic(imgs)
-        mask_logits_per_layer, class_logits_per_layer = self(crops)
-
+        
+        mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer = self(crops)
         targets = self.to_per_pixel_targets_semantic(targets, self.ignore_idx)
 
         for i, (mask_logits, class_logits) in enumerate(
