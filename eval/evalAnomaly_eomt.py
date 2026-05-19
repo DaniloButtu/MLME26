@@ -178,11 +178,22 @@ def main():
         nargs="+",
         help="Glob pattern(s) for input images.",
     )
+
+    # parser.add_argument(
+        # "--config_path",
+        # default="./eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml",
+        # help="Path to the YAML config that defines model + data.",
+    # )
+
+    # Genera un percorso assoluto in automatico usando project_root
+    abs_default_config = os.path.join(project_root, "eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml")
+
     parser.add_argument(
         "--config_path",
-        default="./eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml",
+        default=abs_default_config,
         help="Path to the YAML config that defines model + data.",
     )
+
     parser.add_argument(
         "--ckpt_path",
         default=None,
