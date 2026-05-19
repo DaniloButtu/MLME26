@@ -165,7 +165,7 @@ def main():
             else:
                 crops, origins = model.window_imgs_semantic(imgs_list)
 
-            mask_logits_per_layer, class_logits_per_layer = model(crops)
+            mask_logits_per_layer, class_logits_per_layer, _ = model(crops)
             
             mask_logits = mask_logits_per_layer[0]
             class_logits = class_logits_per_layer[0]

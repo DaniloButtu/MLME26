@@ -367,7 +367,7 @@ def main():
 
             # Single forward pass — all three output lists are always returned.
             # anomaly_logits_per_layer[i] is None when anomaly_head_enabled=False.
-            mask_logits_per_layer, class_logits_per_layer, *_ = model.network(x)
+            mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer = model.network(x)
 
             # ── MLP HEAD anomaly map (only when head exists) ──────────────
             has_anomaly_head = (
