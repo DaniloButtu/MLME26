@@ -118,6 +118,7 @@ def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
     # using the official EoMT formula: sigmoid(mask) · softmax(class)[..., :-1]
     mask_logits = F.interpolate(mask_logits, size=img_size,
                                 mode="bilinear", align_corners=False)
+    # DA CONTROLLARE: Marinai chiede perchè la facciamo, in teoria dovrebbe servire da controllo (fatto da chat)
     # Assemble per-pixel class scores using the official EoMT formula:
     #   crop_logits[b, c, h, w] = Σ_q sigmoid(mask[b,q,h,w]) * softmax(class[b,q])[c]
     # Void class is excluded (softmax[..., :-1]) — identical to to_per_pixel_logits_semantic.
