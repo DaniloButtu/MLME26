@@ -42,7 +42,7 @@ torch.backends.cudnn.benchmark = True
 
 hf = h5py.File("val_data.h5", 'w')
 
-dset_logits = hf.create_dataset('logits', shape=(0, NUM_CLASSES-1), maxshape=(None, NUM_CLASSES), dtype='float32')
+dset_logits = hf.create_dataset('logits', shape=(0, NUM_CLASSES), maxshape=(None, NUM_CLASSES), dtype='float32')
 dset_labels = hf.create_dataset('labels', shape=(0,), maxshape=(None,), dtype='uint8')
 
 def main():
@@ -246,9 +246,10 @@ def main():
 
         else:
             valid_mask = (ood_gts == 0) | (ood_gts == 1)
-            logits_hwc = logits_no_void.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            
-            valid_logits = logits_hwc[valid_mask]
+            # Usa logits completo (con la classe void inclusa) invece di logits_no_void
+            logits_full = logits.squeeze(0).permute(1, 2, 0).cpu().numpy()   # (H, W, 19)
+
+            valid_logits = logits_full[valid_mask]   # (N_validi, 19)
             valid_labels = ood_gts[valid_mask]
 
             if valid_logits.shape[0] > 0:
