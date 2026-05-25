@@ -108,7 +108,7 @@ def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
                        revert_fn, origins, img_sizes, img_size, method):
     """
     Reconstruct a per-pixel anomaly score from the segmentation heads.
-    Returns a normalised numpy array in [0, 1].
+    Returns a raw (non-normalised) numpy array (higher = more anomalous).
     """
     # Take the final decoder layer output (only layer when masked attn is off)
     mask_logits  = mask_logits_per_layer[-1].float()   # [B, Q, H_tok, W_tok]
@@ -118,12 +118,7 @@ def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
     # using the official EoMT formula: sigmoid(mask) · softmax(class)[..., :-1]
     mask_logits = F.interpolate(mask_logits, size=img_size,
                                 mode="bilinear", align_corners=False)
-    # DA CONTROLLARE: Marinai chiede perchè la facciamo, in teoria dovrebbe servire da controllo (fatto da chat)
-    # Assemble per-pixel class scores using the official EoMT formula:
-    #   crop_logits[b, c, h, w] = Σ_q sigmoid(mask[b,q,h,w]) * softmax(class[b,q])[c]
-    # Void class is excluded (softmax[..., :-1]) — identical to to_per_pixel_logits_semantic.
-    # We inline it here so this function works with both AnomalyClassificationModule
-    # (which has no such method) and MaskClassificationSemantic.
+    # Assemble per-pixel class scores (void class excluded via [..., :-1])
     crop_logits = torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
@@ -137,31 +132,25 @@ def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
     # Decide if values are already probabilities or raw logits
     sums = logits.sum(dim=1)
     if not torch.allclose(sums, torch.ones_like(sums), atol=1e-2) or logits.min() < 0.0:
-        probs = torch.softmax(logits, dim=1)
+        probs = torch.softmax(logits, dim=1)  # softmax over C classes (no void)
     else:
         probs = logits
-
-    void_probs    = probs[:, -1, :, :].squeeze(0).cpu().numpy()
-    logits_no_void = logits[:, :-1, :, :]
 
     if method == "msp":
         cmap = 1.0 - torch.max(probs, dim=1)[0].squeeze().cpu().numpy()
     elif method == "max_logit":
-        cmap = -np.max(logits_no_void.squeeze(0).cpu().numpy(), axis=0)
+        cmap = -np.max(logits.squeeze(0).cpu().numpy(), axis=0)
     elif method == "max_entropy":
         entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
         cmap = entropy.squeeze(0).cpu().numpy()
     elif method == "rba":
-        # Original formula: higher in-distribution confidence → lower anomaly score
-        tanh_sum = np.sum(np.tanh(logits_no_void.squeeze(0).cpu().numpy()), axis=0)
+        tanh_sum = np.sum(np.tanh(logits.squeeze(0).cpu().numpy()), axis=0)
         cmap = -tanh_sum
     else:
         raise ValueError(f"Unknown method: {method}")
 
     cmap = np.nan_to_num(cmap, nan=0.0, posinf=1.0, neginf=0.0)
-    # Return raw scores — do NOT normalize here.
-    # average_precision_score is computed across all pixels of all images,
-    # so per-image min-max normalization would destroy cross-image ranking.
+    # Return raw scores – no per‑image normalisation.
     return cmap
 
 
@@ -179,12 +168,6 @@ def main():
         nargs="+",
         help="Glob pattern(s) for input images.",
     )
-
-    # parser.add_argument(
-        # "--config_path",
-        # default="./eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml",
-        # help="Path to the YAML config that defines model + data.",
-    # )
 
     # Genera un percorso assoluto in automatico usando project_root
     abs_default_config = os.path.join(project_root, "eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml")
@@ -254,8 +237,6 @@ def main():
     encoder_cls = getattr(importlib.import_module(encoder_module_name), encoder_class_name)
 
     # Use the encoder's own img_size from the model config (NOT the data img_size).
-    # The data img_size (e.g. 1024×2048 for training) differs from the encoder's
-    # training resolution and would cause a pos_embed shape mismatch.
     enc_kwargs = encoder_cfg.get("init_args", {}).copy()
     img_size   = enc_kwargs.get(
         "img_size",
@@ -264,17 +245,12 @@ def main():
     if isinstance(img_size, list):
         img_size = tuple(img_size)
 
-    # --img_size CLI flag overrides whatever the config says.
-    # For eomt_base_640.yaml (no img_size in config, defaults to 1024x1024)
-    # you should pass --img_size 640 640 to match the model's training resolution.
     if args.img_size is not None:
         img_size = tuple(args.img_size)
         print(f"img_size overridden by --img_size: {img_size}")
     else:
         print(f"img_size from config: {img_size}")
 
-    # Always inject img_size into enc_kwargs — eomt_base_640.yaml omits it
-    # from the encoder's init_args (ViT requires it as a positional argument).
     enc_kwargs["img_size"] = list(img_size)
 
     encoder = encoder_cls(**enc_kwargs)
@@ -287,7 +263,6 @@ def main():
     network_cls = getattr(importlib.import_module(network_module_name), network_class_name)
 
     network_kwargs = {k: v for k, v in network_cfg["init_args"].items() if k != "encoder"}
-    # Disable masked attention during inference for speed
     network_kwargs["masked_attn_enabled"] = False
     network_kwargs["num_classes"]         = NUM_CLASSES
 
@@ -305,14 +280,10 @@ def main():
     model_kwargs["img_size"] = img_size
 
     if is_anomaly_module:
-        # AnomalyClassificationModule has no num_classes parameter — remove it if present.
         model_kwargs.pop("num_classes", None)
     else:
-        # MaskClassificationSemantic requires num_classes.
-        # eomt_base_640.yaml is minimal and omits it, so we supply the default.
         model_kwargs.setdefault("num_classes", NUM_CLASSES)
 
-    # Suppress in-__init__ base-weight loading; we handle checkpoint loading below.
     model_kwargs["ckpt_path"] = None
 
     model = lit_cls(network=network, **model_kwargs).eval().to(device)
@@ -320,17 +291,14 @@ def main():
     # ------------------------------------------------------------------
     # Load checkpoint
     # ------------------------------------------------------------------
-    # Priority: --ckpt_path CLI arg > ckpt_path in config root > no checkpoint
     ckpt_path = args.ckpt_path or config.get("ckpt_path") or None
 
     if ckpt_path:
         print(f"Loading weights from: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
         state_dict = checkpoint.get("state_dict", checkpoint)
-        # Remove torch.compile artefacts (e.g. "._orig_mod" prefixes)
         state_dict = {k.replace("._orig_mod", ""): v for k, v in state_dict.items()}
 
-        # Bicubic-interpolate pos_embed when checkpoint and model resolutions differ
         _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size)
 
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -356,32 +324,23 @@ def main():
         img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).to(device)
 
         with torch.no_grad(), torch.amp.autocast(device_type="cuda" if not args.cpu else "cpu"):
-            # window_imgs_semantic (MaskClassificationSemantic) converts via PIL internally
-            # and therefore requires uint8 tensors.
-            # window_imgs (AnomalyClassificationModule) expects float32 in [0, 255].
             if is_anomaly_module:
                 imgs_list = [img_tensor.float()]
             else:
-                imgs_list = [img_tensor]  # keep uint8 for window_imgs_semantic
+                imgs_list = [img_tensor]
 
             img_sizes = [img.shape[-2:] for img in imgs_list]
 
-            # Windowing: AnomalyClassificationModule uses 2-D sliding window;
-            # MaskClassificationSemantic uses 1-D strip windowing.
             mod = model.module if isinstance(model, torch.nn.DataParallel) else model
             if is_anomaly_module:
                 crops, origins = mod.window_imgs(imgs_list)
             else:
                 crops, origins = mod.window_imgs_semantic(imgs_list)
 
-            # Normalise to [0, 1] before the forward pass
             x = crops.float() / 255.0
 
-            # Single forward pass — all three output lists are always returned.
-            # anomaly_logits_per_layer[i] is None when anomaly_head_enabled=False.
             mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer = model.network(x)
 
-            # ── MLP HEAD anomaly map (only when head exists) ──────────────
             has_anomaly_head = (
                 is_anomaly_module
                 and anomaly_logits_per_layer[-1] is not None
@@ -396,11 +355,6 @@ def main():
                 mlp_anomaly_map  = np.nan_to_num(mlp_anomaly_map,
                                                   nan=0.0, posinf=1.0, neginf=0.0)
 
-            # ── Classic segmentation-based score ──────────────────────────
-            # The two modules use different windowing strategies with different
-            # origin formats, so we pick the matching revert helper:
-            #   - AnomalyClassificationModule  -> 2-D origins -> revert_window_logits
-            #   - MaskClassificationSemantic   -> 1-D origins -> revert_window_logits_semantic
             if is_anomaly_module:
                 revert_fn = mod.revert_window_logits
             else:
@@ -411,10 +365,7 @@ def main():
                 revert_fn, origins, img_sizes, img_size, args.method
             )
 
-            # ── Combine scores ────────────────────────────────────────────
             if has_anomaly_head:
-                # Normalize classic map to [0,1] only here, so it matches the
-                # MLP sigmoid scale before taking the element-wise maximum.
                 c_min, c_max = classic_map.min(), classic_map.max()
                 classic_map_norm = (
                     (classic_map - c_min) / (c_max - c_min)
@@ -431,12 +382,10 @@ def main():
                 elif args.combine_score == "raw":
                     anomaly_map = mlp_anomaly_map
             else:
-                # Baseline: use raw classic scores — identical to the original repo.
                 anomaly_map = classic_map
 
             anomaly_result = anomaly_map
 
-            # Save a debug heatmap for the very first image processed
             if len(ood_gts_list) <= 0:
                 debug_stem = os.path.splitext(os.path.basename(path))[0]
                 map_u8     = cv2.normalize(anomaly_map, None, 0, 255,
@@ -508,7 +457,6 @@ def main():
     print(f'AUPRC score: {prc_auc * 100.0:.4f}')
     print(f'FPR@TPR95:   {fpr   * 100.0:.4f}')
 
-
     input_parts  = re.split(r'[\\/]', str(args.input[0]))
     try:
         ds_idx      = [p.lower() for p in input_parts].index('dataset')
@@ -518,9 +466,9 @@ def main():
 
     caps_digits = "".join(re.findall(r'[A-Z0-9]', folder_name))
     if caps_digits:
-        dataset_tag = caps_digits                                      # e.g. RA21, RO21
+        dataset_tag = caps_digits
     else:
-        dataset_tag = " ".join(w.upper() for w in folder_name.split('_'))  # e.g. FS STATIC
+        dataset_tag = " ".join(w.upper() for w in folder_name.split('_'))
 
     model_tag = os.path.splitext(os.path.basename(args.config_path))[0]
     size_tag  = f"{img_size[0]}x{img_size[1]}"
