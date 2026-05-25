@@ -361,8 +361,6 @@ def main():
                 # Stitch crops and apply sigmoid to obtain anomaly probability map
                 anomaly_list     = mod.revert_window_logits(crop_anomaly, origins, img_sizes)
                 mlp_anomaly_map  = torch.sigmoid(anomaly_list[0]).squeeze(0).cpu().numpy()
-                mlp_anomaly_map  = np.nan_to_num(mlp_anomaly_map,
-                                                  nan=0.0, posinf=1.0, neginf=0.0)
 
             
             # Build classic anomaly map from semantic segmentation
