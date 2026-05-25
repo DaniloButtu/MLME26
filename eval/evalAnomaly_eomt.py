@@ -49,9 +49,9 @@ from lightning import seed_everything
 from ood_metrics import fpr_at_95_tpr
 from sklearn.metrics import average_precision_score
 
-# ---------------------------------------------------------------------------
-# Path setup
-# ---------------------------------------------------------------------------
+
+# Path setup: add project root and the eomt folder to sys.path so that
+# we can import the model modules.
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
@@ -59,9 +59,7 @@ eomt_path = os.path.join(project_root, 'eomt')
 if eomt_path not in sys.path:
     sys.path.append(eomt_path)
 
-# ---------------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------------
+
 seed = 42
 seed_everything(seed, verbose=False)
 random.seed(seed)
@@ -69,18 +67,18 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 NUM_CHANNELS = 3
-NUM_CLASSES  = 19
+NUM_CLASSES  = 19   # Number of semantic classes (Cityscapes trainId 0-18)
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark     = True
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helper functions
 # ---------------------------------------------------------------------------
 
 def _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size):
-    """Bicubic-interpolate pos_embed when the checkpoint resolution differs."""
+    #To interpolate the positional embedding of the backbone when the checkpoint resolution differs from the current model.
     key = 'network.encoder.backbone.pos_embed'
     if key not in state_dict:
         return
@@ -90,14 +88,15 @@ def _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size):
         return
 
     print(f"Interpolating pos_embed: {ckpt_pe.shape} -> {model_pe.shape}")
-    dim        = ckpt_pe.shape[-1]
+    dim        = ckpt_pe.shape[-1]                     # Embedding dimension
     patch_size = encoder_cfg.get("init_args", {}).get("patch_size", 16)
-    target_h   = img_size[0] // patch_size
-    target_w   = img_size[1] // patch_size
-    ckpt_seq   = ckpt_pe.shape[1]
-    ckpt_h     = int(math.sqrt(ckpt_seq))  # assumes square; works for 1024x1024 source
+    target_h   = img_size[0] // patch_size            # Number of patches in height
+    target_w   = img_size[1] // patch_size            # Number of patches in width
+    ckpt_seq   = ckpt_pe.shape[1]                     # Original sequence length
+    ckpt_h     = int(math.sqrt(ckpt_seq))             # square grid
     ckpt_w     = ckpt_seq // ckpt_h
 
+    # Reshape to 2D grid, interpolate, then reshape back to 1D sequence
     pe_2d        = ckpt_pe.reshape(1, ckpt_h, ckpt_w, dim).permute(0, 3, 1, 2)
     interpolated = F.interpolate(pe_2d, size=(target_h, target_w),
                                  mode='bicubic', align_corners=False)
@@ -106,53 +105,57 @@ def _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size):
 
 def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
                        revert_fn, origins, img_sizes, img_size, method):
-    """
-    Reconstruct a per-pixel anomaly score from the segmentation heads.
-    Returns a raw (non-normalised) numpy array (higher = more anomalous).
-    """
-    # Take the final decoder layer output (only layer when masked attn is off)
+    
+    # To Reconstruct a per-pixel anomaly score from the semantic segmentation heads.
+   
+    # Take the output of the last decoder layer (only one layer when masked_attn is disabled)
     mask_logits  = mask_logits_per_layer[-1].float()   # [B, Q, H_tok, W_tok]
-    class_logits = class_logits_per_layer[-1].float()  # [B, Q, C+1]
+    class_logits = class_logits_per_layer[-1].float()  # [B, Q, C+1]  (C=19, +1 for void)
 
-    # Resize mask logits to crop resolution then assemble per-pixel class scores
-    # using the official EoMT formula: sigmoid(mask) · softmax(class)[..., :-1]
+    # Upsample mask logits to the crop size (img_size) using bilinear interpolation
     mask_logits = F.interpolate(mask_logits, size=img_size,
                                 mode="bilinear", align_corners=False)
-    # Assemble per-pixel class scores (void class excluded via [..., :-1])
+
+    # Combine mask and class logits to obtain per‑pixel class scores.
+    # Formula: sigmoid(mask) * softmax(class)[..., :-1]  (exclude void)
     crop_logits = torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
         class_logits.softmax(dim=-1)[..., :-1],
     )
 
-    # Stitch crops back to full-image resolution
+    # Stitch the overlapping crops back into full‑resolution images.
+    # revert_fn is either revert_window_logits (for anomaly module) or
+    # revert_window_logits_semantic (for standard module).
     logits_list = revert_fn(crop_logits, origins, img_sizes)
-    logits      = logits_list[0].unsqueeze(0)  # [1, C, H, W]
+    logits      = logits_list[0].unsqueeze(0)          # [1, C, H, W]
 
-    probs = torch.softmax(logits, dim=1)  # softmax over the classes (no void)
+    # Compute class probabilities via softmax over the semantic classes (no void)
+    probs = torch.softmax(logits, dim=1)               # [1, C, H, W]
 
+    
+    # Anomaly score according to the selected method
     if method == "msp":
+        # Maximum Softmax Probability: anomaly = 1 - max(prob)
         cmap = 1.0 - torch.max(probs, dim=1)[0].squeeze().cpu().numpy()
     elif method == "max_logit":
+        # Max Logit: anomaly = - max(logit)  (higher logit -> more confident -> less anomalous)
         cmap = -np.max(logits.squeeze(0).cpu().numpy(), axis=0)
     elif method == "max_entropy":
+        # Entropy of the probability distribution: higher entropy = more uncertain = anomaly
         entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
         cmap = entropy.squeeze(0).cpu().numpy()
     elif method == "rba":
+        # rba – sum of tanh(logit) over classes, then negate
         tanh_sum = np.sum(np.tanh(logits.squeeze(0).cpu().numpy()), axis=0)
         cmap = -tanh_sum
     else:
         raise ValueError(f"Unknown method: {method}")
 
-    cmap = np.nan_to_num(cmap, nan=0.0, posinf=1.0, neginf=0.0)
-    # Return raw scores – no per‑image normalisation.
     return cmap
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
+# Main evaluation routine
 def main():
     parser = ArgumentParser(
         description="Anomaly detection evaluation for EoMT models."
@@ -164,7 +167,7 @@ def main():
         help="Glob pattern(s) for input images.",
     )
 
-    # Genera un percorso assoluto in automatico usando project_root
+    # Build an absolute default path for the config using project_root
     abs_default_config = os.path.join(project_root, "eomt/configs/dinov2/cityscapes/semantic/eomt_mlp.yaml")
 
     parser.add_argument(
@@ -180,8 +183,8 @@ def main():
              "If omitted, the script uses ckpt_path from config or no pretrained weights.",
     )
     parser.add_argument('--subset',      default="val")
-    parser.add_argument('--num-workers',  type=int, default=4)
-    parser.add_argument('--batch-size',   type=int, default=1)
+    parser.add_argument('--num-workers',  type=int, default=4)   # Not used in this script (no DataLoader)
+    parser.add_argument('--batch-size',   type=int, default=1)   # Not used
     parser.add_argument('--method', default='rba',
                         choices=['msp', 'max_logit', 'max_entropy', 'rba'])
     parser.add_argument(
@@ -194,44 +197,38 @@ def main():
     parser.add_argument('--combine_score', default='max', choices=['raw','max', 'mean','dot','weighted_sum'])
     args = parser.parse_args()
 
-    anomaly_score_list = []
-    ood_gts_list       = []
+    anomaly_score_list = []   # Will store the anomaly map for each image
+    ood_gts_list       = []   # Will store the corresponding ground truth masks
 
+    # Open (or create) a results file to append metrics
     if not os.path.exists('results.txt'):
         open('results.txt', 'w').close()
     results_file = open('results.txt', 'a')
 
-    # ------------------------------------------------------------------
-    # Load config
-    # ------------------------------------------------------------------
+    #####################################
+    # Load the YAML configuration file
     print(f"Loading configuration from: {args.config_path}")
     with open(args.config_path, "r") as f:
         config = yaml.safe_load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
 
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*Attribute 'network' is an instance of `nn\.Module`.*",
-    )
 
-    # ------------------------------------------------------------------
-    # Detect operating mode from config class_path
-    # ------------------------------------------------------------------
+    # Detect operating mode from the Lightning module class_path
     lit_class_path = config["model"]["class_path"]
     # True  -> AnomalyClassificationModule  (eomt_mlp.yaml)
     # False -> MaskClassificationSemantic   (eomt_base_640.yaml)
     is_anomaly_module = "AnomalyClassificationModule" in lit_class_path
     print(f"Mode: {'AnomalyClassificationModule' if is_anomaly_module else 'MaskClassificationSemantic'}")
 
-    # ------------------------------------------------------------------
-    # Build encoder
-    # ------------------------------------------------------------------
+    #####################################################################
+    # Build the ENCODER (backbone) as specified in the config
     encoder_cfg = config["model"]["init_args"]["network"]["init_args"]["encoder"]
     encoder_module_name, encoder_class_name = encoder_cfg["class_path"].rsplit(".", 1)
     encoder_cls = getattr(importlib.import_module(encoder_module_name), encoder_class_name)
 
-    # Use the encoder's own img_size from the model config (NOT the data img_size).
+    # Determine the image size (crop size) for the encoder.
+    # Priority: command line override > encoder config > model config > default (1024,1024)
     enc_kwargs = encoder_cfg.get("init_args", {}).copy()
     img_size   = enc_kwargs.get(
         "img_size",
@@ -246,26 +243,28 @@ def main():
     else:
         print(f"img_size from config: {img_size}")
 
-    enc_kwargs["img_size"] = list(img_size)
-
+    enc_kwargs["img_size"] = list(img_size)   # Update encoder kwargs
     encoder = encoder_cls(**enc_kwargs)
 
-    # ------------------------------------------------------------------
-    # Build network (EoMT)
-    # ------------------------------------------------------------------
+
+    #################################################
+    # Build the EoMT NETWORK (decoder + encoder)
+    ############
     network_cfg = config["model"]["init_args"]["network"]
     network_module_name, network_class_name = network_cfg["class_path"].rsplit(".", 1)
     network_cls = getattr(importlib.import_module(network_module_name), network_class_name)
 
+    # Filter out 'encoder' from init_args because we pass it separately
     network_kwargs = {k: v for k, v in network_cfg["init_args"].items() if k != "encoder"}
-    network_kwargs["masked_attn_enabled"] = False
+    network_kwargs["masked_attn_enabled"] = False   # Disable masked attention for inference
     network_kwargs["num_classes"]         = NUM_CLASSES
 
     network = network_cls(encoder=encoder, **network_kwargs)
 
-    # ------------------------------------------------------------------
-    # Build Lightning module
-    # ------------------------------------------------------------------
+    #######################################################################
+    # Build the LIGHTINGMODULE (either AnomalyClassificationModule or
+    # MaskClassificationSemantic)
+    #################################
     lit_module_name, lit_class_name = lit_class_path.rsplit(".", 1)
     lit_cls = getattr(importlib.import_module(lit_module_name), lit_class_name)
 
@@ -274,28 +273,30 @@ def main():
         model_kwargs["stuff_classes"] = config["data"]["init_args"]["stuff_classes"]
     model_kwargs["img_size"] = img_size
 
+    # The anomaly module does not accept a 'num_classes' argument, the semantic one does.
     if is_anomaly_module:
         model_kwargs.pop("num_classes", None)
     else:
         model_kwargs.setdefault("num_classes", NUM_CLASSES)
 
-    model_kwargs["ckpt_path"] = None
-
+    model_kwargs["ckpt_path"] = None   # We will load weights manually
     model = lit_cls(network=network, **model_kwargs).eval().to(device)
 
-    # ------------------------------------------------------------------
-    # Load checkpoint
-    # ------------------------------------------------------------------
+    ########################################
+    # Load the checkpoint (weights)
     ckpt_path = args.ckpt_path or config.get("ckpt_path") or None
 
     if ckpt_path:
         print(f"Loading weights from: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
         state_dict = checkpoint.get("state_dict", checkpoint)
+        # Remove compilation artifacts if present
         state_dict = {k.replace("._orig_mod", ""): v for k, v in state_dict.items()}
 
+        # Interpolate positional embedding if needed
         _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size)
 
+        # Load with strict=False because the anomaly head may be missing in some configs
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         print("Checkpoint loaded successfully.")
 
@@ -308,59 +309,77 @@ def main():
     else:
         print("No checkpoint specified; using randomly initialised weights.")
 
-    # ------------------------------------------------------------------
-    # Inference & evaluation loop
-    # ------------------------------------------------------------------
+
+    # Inference loop over all images matching the input pattern
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(f"\nProcessing: {path}")
 
+        # Load and preprocess the image
         img_pil    = Image.open(path).convert('RGB')
         img_np     = np.array(img_pil)
         img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).to(device)
 
+        # Forward pass through the model
         with torch.no_grad(), torch.amp.autocast(device_type="cuda" if not args.cpu else "cpu"):
+            # The anomaly module expects float images (will divide by 255 later),
+            # while the semantic module expects uint8 (division inside window_imgs_semantic).
             if is_anomaly_module:
                 imgs_list = [img_tensor.float()]
             else:
                 imgs_list = [img_tensor]
 
-            img_sizes = [img.shape[-2:] for img in imgs_list]
+            img_sizes = [img.shape[-2:] for img in imgs_list]   # Original image dimensions
 
+            # Obtain the model's underlying module
             mod = model.module if isinstance(model, torch.nn.DataParallel) else model
+
+            # Split image(s) into overlapping windows (crops) ready for the model.
             if is_anomaly_module:
                 crops, origins = mod.window_imgs(imgs_list)
             else:
                 crops, origins = mod.window_imgs_semantic(imgs_list)
 
+            # Normalise pixel values to [0,1] (the model expects this)
             x = crops.float() / 255.0
 
+            # Forward through the network (encoder + decoder)
+            # Returns: mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer
             mask_logits_per_layer, class_logits_per_layer, anomaly_logits_per_layer = model.network(x)
 
+            # Check if an anomaly head is present and produced valid output
             has_anomaly_head = (
                 is_anomaly_module
                 and anomaly_logits_per_layer[-1] is not None
             )
 
+            #######################################################
+            # Process MLP anomaly head output (if available)
             if has_anomaly_head:
                 crop_anomaly = anomaly_logits_per_layer[-1]
                 crop_anomaly = F.interpolate(crop_anomaly, size=img_size,
                                              mode="bilinear", align_corners=False)
+                # Stitch crops and apply sigmoid to obtain anomaly probability map
                 anomaly_list     = mod.revert_window_logits(crop_anomaly, origins, img_sizes)
                 mlp_anomaly_map  = torch.sigmoid(anomaly_list[0]).squeeze(0).cpu().numpy()
                 mlp_anomaly_map  = np.nan_to_num(mlp_anomaly_map,
                                                   nan=0.0, posinf=1.0, neginf=0.0)
 
+            
+            # Build classic anomaly map from semantic segmentation
             if is_anomaly_module:
-                revert_fn = mod.revert_window_logits
+                revert_fn = mod.revert_window_logits          # For single‑channel anomaly maps
             else:
-                revert_fn = mod.revert_window_logits_semantic
+                revert_fn = mod.revert_window_logits_semantic # For multi‑class logits
 
             classic_map = _build_classic_map(
                 mask_logits_per_layer, class_logits_per_layer,
                 revert_fn, origins, img_sizes, img_size, args.method
             )
 
+            
+            # Combine the two anomaly maps if both exist
             if has_anomaly_head:
+                # Normalise the classic map to [0,1] per image (min‑max scaling)
                 c_min, c_max = classic_map.min(), classic_map.max()
                 classic_map_norm = (
                     (classic_map - c_min) / (c_max - c_min)
@@ -381,6 +400,8 @@ def main():
 
             anomaly_result = anomaly_map
 
+            ##########################################################################
+            # Debug: save a heatmap for the first image to visualise anomalies
             if len(ood_gts_list) <= 0:
                 debug_stem = os.path.splitext(os.path.basename(path))[0]
                 map_u8     = cv2.normalize(anomaly_map, None, 0, 255,
@@ -390,9 +411,7 @@ def main():
                 cv2.imwrite(debug_name, heatmap)
                 print(f"\n--- Debug heatmap saved as {debug_name} ---\n")
 
-        # ------------------------------------------------------------------
-        # Ground-truth loading and label remapping
-        # ------------------------------------------------------------------
+        # Load and process the ground truth mask for the current image
         pathGT = path.replace("images", "labels_masks")
         if "RoadObsticle21" in pathGT:
             pathGT = pathGT.replace("webp", "png")
@@ -409,23 +428,32 @@ def main():
 
         ood_gts = np.array(mask)
 
+        
+        # Remap ground truth labels to a binary format (0 = in-distribution,
+        # 1 = anomaly) for each dataset.
         if "RoadAnomaly" in pathGT:
+            # In RoadAnomaly, label 2 indicates anomaly -> map to 1
             ood_gts = np.where(ood_gts == 2, 1, ood_gts)
         if "LostAndFound" in pathGT:
-            ood_gts = np.where(ood_gts == 0,  255, ood_gts)
-            ood_gts = np.where(ood_gts == 1,  0,   ood_gts)
-            ood_gts = np.where((ood_gts > 1) & (ood_gts < 201), 1, ood_gts)
+            # LostAndFound: 0 = void/ignore, 1 = road, 2..200 = anomalies
+            ood_gts = np.where(ood_gts == 0,  255, ood_gts)   # 255 = ignore
+            ood_gts = np.where(ood_gts == 1,  0,   ood_gts)   # road -> 0
+            ood_gts = np.where((ood_gts > 1) & (ood_gts < 201), 1, ood_gts)  # anomalies -> 1
         if "Streethazard" in pathGT:
+            # Streethazard: 14 = anomaly, anything <20 = road/other -> 0
             ood_gts = np.where(ood_gts == 14, 255, ood_gts)
             ood_gts = np.where(ood_gts < 20,  0,   ood_gts)
             ood_gts = np.where(ood_gts == 255, 1,   ood_gts)
 
+        # Skip images that contain no anomaly pixels (no ground truth positive)
         if 1 not in np.unique(ood_gts):
             continue
 
+        # Store the anomaly map and the corresponding ground truth
         ood_gts_list.append(ood_gts)
         anomaly_score_list.append(anomaly_result)
 
+        # Clean up to free memory
         del anomaly_result, ood_gts, mask, img_tensor, img_pil, img_np
         torch.cuda.empty_cache()
 
@@ -436,22 +464,26 @@ def main():
         results_file.close()
         return
 
-    # ------------------------------------------------------------------
-    # Metrics
-    # ------------------------------------------------------------------
-    ood_gts        = np.array(ood_gts_list)
-    anomaly_scores = np.array(anomaly_score_list)
+    ##########################################
+    # Compute anomaly detection metrics
+    ood_gts        = np.array(ood_gts_list)          # List of 2D masks
+    anomaly_scores = np.array(anomaly_score_list)    # List of 2D anomaly maps
 
+    # Flatten all pixels while keeping only those marked as inlier (0) or anomaly (1)
     valid_mask = (ood_gts == 0) | (ood_gts == 1)
     val_out    = anomaly_scores[valid_mask]
     val_label  = ood_gts[valid_mask]
 
+    # AUPRC
     prc_auc = average_precision_score(val_label, val_out)
+    # FPR at 95% TPR
     fpr     = fpr_at_95_tpr(val_out, val_label)
 
     print(f'AUPRC score: {prc_auc * 100.0:.4f}')
     print(f'FPR@TPR95:   {fpr   * 100.0:.4f}')
 
+
+    # Create a tag for the dataset and model for the results file
     input_parts  = re.split(r'[\\/]', str(args.input[0]))
     try:
         ds_idx      = [p.lower() for p in input_parts].index('dataset')
@@ -468,6 +500,7 @@ def main():
     model_tag = os.path.splitext(os.path.basename(args.config_path))[0]
     size_tag  = f"{img_size[0]}x{img_size[1]}"
 
+    # Append the results to the file
     results_file.write(
         f"{args.method} {model_tag} {args.combine_score} {dataset_tag}  {size_tag}  "
         f"AUPRC score:{prc_auc * 100.0}   FPR@TPR95:{fpr * 100.0}"
