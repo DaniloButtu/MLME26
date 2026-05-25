@@ -129,12 +129,7 @@ def _build_classic_map(mask_logits_per_layer, class_logits_per_layer,
     logits_list = revert_fn(crop_logits, origins, img_sizes)
     logits      = logits_list[0].unsqueeze(0)  # [1, C, H, W]
 
-    # Decide if values are already probabilities or raw logits
-    sums = logits.sum(dim=1)
-    if not torch.allclose(sums, torch.ones_like(sums), atol=1e-2) or logits.min() < 0.0:
-        probs = torch.softmax(logits, dim=1)  # softmax over C classes (no void)
-    else:
-        probs = logits
+    probs = torch.softmax(logits, dim=1)  # softmax over the classes (no void)
 
     if method == "msp":
         cmap = 1.0 - torch.max(probs, dim=1)[0].squeeze().cpu().numpy()
