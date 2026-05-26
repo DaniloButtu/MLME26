@@ -73,10 +73,8 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark     = True
 
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
 
+# Helper functions
 def _interpolate_pos_embed(state_dict, model, encoder_cfg, img_size):
     #To interpolate the positional embedding of the backbone when the checkpoint resolution differs from the current model.
     key = 'network.encoder.backbone.pos_embed'
