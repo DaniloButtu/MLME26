@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import lightning
 from torch.optim import AdamW
 
-# Nuovi import per la visualizzazione e il logging su wandb
+# New imports for visualization and logging on wandb
 import matplotlib.pyplot as plt
 import io
 from PIL import Image
@@ -38,9 +38,11 @@ class AnomalyClassificationModule(lightning.LightningModule):
             self.load_state_dict(ckpt, strict=False)
             print("Base weights loaded! Initializing anomaly head from scratch.")
 
+        # parameters for semantic segmentation are frozen
         for param in self.network.parameters():
             param.requires_grad = False
         
+        # parameters for anomaly segmentation are unfrozen
         for param in self.network.anomaly_head.parameters():
             param.requires_grad = True
 
@@ -62,13 +64,13 @@ class AnomalyClassificationModule(lightning.LightningModule):
 
     def window_imgs(self, imgs, stride_ratio=0.5):
         """
-        Estrae crop sovrapposti usando una logica sliding window 2D.
-        stride_ratio = 0.5 significa che la finestra avanza di metà della sua dimensione (50% overlap).
+        Extracts overlapped crops using the sliding window 2D logic
+        stride_ratio = 0.5 means that the window advances by half its size (50% overlap).
         """
         crops, origins = [], []
         window_h, window_w = self.img_size
         
-        # Calcoliamo lo stride in pixel
+        # Compute pixel stride
         stride_h = max(1, int(window_h * stride_ratio))
         stride_w = max(1, int(window_w * stride_ratio))
 
@@ -80,23 +82,23 @@ class AnomalyClassificationModule(lightning.LightningModule):
                 img.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False
             ).squeeze(0)
 
-            # Generiamo le coordinate di partenza per H e W
+            # Generate the starting coordinates for H and W
             y_starts = list(range(0, max(1, new_h - window_h + 1), stride_h))
-            # Assicuriamoci che l'ultimo crop arrivi esattamente al bordo inferiore
+            # Ensure the last crop reaches exactly the bottom edge
             if new_h > window_h and y_starts[-1] + window_h < new_h:
                 y_starts.append(new_h - window_h)
 
             x_starts = list(range(0, max(1, new_w - window_w + 1), stride_w))
-            # Assicuriamoci che l'ultimo crop arrivi esattamente al bordo destro
+            # Ensure the last crop reaches exactly the right edge
             if new_w > window_w and x_starts[-1] + window_w < new_w:
                 x_starts.append(new_w - window_w)
 
-            # Estraiamo i crop scorrendo sulla griglia 2D
+            # Extract crops by sliding across the 2D grid
             for y in y_starts:
                 for x in x_starts:
                     crop = resized_img[:, y:y+window_h, x:x+window_w]
                     
-                    # Se l'immagine originaria è più piccola della window, facciamo padding
+                    # If the original image is smaller than the window, apply padding
                     actual_h, actual_w = crop.shape[-2:]
                     if actual_h < window_h or actual_w < window_w:
                         pad_b = window_h - actual_h
@@ -104,7 +106,8 @@ class AnomalyClassificationModule(lightning.LightningModule):
                         crop = F.pad(crop, (0, pad_r, 0, pad_b), mode='reflect')
 
                     crops.append(crop)
-                    # Salviamo l'origine in formato 2D: (index_img, y_start, y_end, x_start, x_end)
+                    
+                    # Save the origin in a 2D format: (index_img, y_start, y_end, x_start, x_end)
                     origins.append((i, y, y+actual_h, x, x+actual_w))
 
         return torch.stack(crops), origins
@@ -121,15 +124,16 @@ class AnomalyClassificationModule(lightning.LightningModule):
             logit_counts.append(torch.zeros((crop_logits.shape[1], h, w), device=crop_logits.device))
 
         for crop_i, (img_i, y1, y2, x1, x2) in enumerate(origins):
-            # Calcoliamo le dimensioni valide del crop (escludendo eventuale padding)
+
+            # Compute the valid dimensions of the crop (excluding padding, if present)
             h_valid = y2 - y1
             w_valid = x2 - x1
-            
-            # Sommiamo i logits e incrementiamo il contatore per la media
+
+            # Sum the logits and increase the counter for the mean
             logit_sums[img_i][:, y1:y2, x1:x2] += crop_logits[crop_i, :, :h_valid, :w_valid]
             logit_counts[img_i][:, y1:y2, x1:x2] += 1
 
-        # Evitiamo divisioni per zero nei rari casi di artefatti ai bordi
+        # Prevent division by zero in rare cases of border artifacts
         for counts in logit_counts:
             counts[counts == 0] = 1
 
@@ -156,10 +160,10 @@ class AnomalyClassificationModule(lightning.LightningModule):
         Genera un plot a 3 pannelli (Immagine, Ground Truth, Predizione) 
         e lo carica su Weights & Biases.
         """
-        # Convertiamo l'immagine in formato HWC uint8 (0-255)
+        # Convert the image in HWC uint8 (0-255) format
         img_np = img.clamp(0, 255).permute(1, 2, 0).cpu().numpy().astype('uint8')
         gt_np = gt_mask.squeeze(0).cpu().numpy()
-        # Applichiamo la sigmoide per ottenere le probabilità [0, 1]
+        # Apply sigmaoid to obtain probabilities [0,1] 
         pred_np = torch.sigmoid(pred_logit).squeeze(0).cpu().numpy()
 
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -179,14 +183,14 @@ class AnomalyClassificationModule(lightning.LightningModule):
 
         plt.tight_layout()
         
-        # Salviamo il plot in memoria come immagine PIL
+        # Save the plot in the memory as PIL image
         buf = io.BytesIO()
         plt.savefig(buf, format="png", bbox_inches="tight")
         plt.close(fig)
         buf.seek(0)
         pil_img = Image.open(buf)
         
-        # Invio a wandb tramite l'esperimento attivo nel logger di Lightning
+        # Log to wandb via the active experiment in the Lightning logger
         if self.logger and hasattr(self.logger.experiment, "log"):
             self.logger.experiment.log({
                 "train/predictions_visual": wandb.Image(
@@ -218,11 +222,11 @@ class AnomalyClassificationModule(lightning.LightningModule):
         
         loss = F.binary_cross_entropy_with_logits(reverted_logits, anomaly_masks)
         
-        # --- LOGGING SU WANDB ---
-        # Se siamo al primo step dell'epoca corrente e il logger è configurato, inviamo il plot
+        # --- LOGGING ON WANDB ---
+        # If it is the first step of the current epoch and the logger is configured, log the plot
         if batch_idx == 0:
             try:
-                # Usiamo .detach() per evitare problemi con il grafo di computazione
+                # Use .detach() to avoid computational graph issues
                 self._log_training_image(imgs[0].detach(), anomaly_masks[0].detach(), reverted_logits[0].detach())
             except Exception as e:
                 print(f"Errore durante il logging dell'immagine su wandb: {e}")
