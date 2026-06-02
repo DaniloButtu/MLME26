@@ -15,17 +15,20 @@ from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 
 seed = 42
 
-# general reproducibility
+# general riproducibility
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
 
 NUM_CHANNELS = 3
 NUM_CLASSES = 20
+
 # gpu training specific
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
+# Preprocessing: the image is resized to 512x1024 pixels using bilinear interpolation and turned into a tensor
+# no normalization
 input_transform = Compose(
     [
         Resize((512, 1024), Image.BILINEAR),
@@ -34,6 +37,7 @@ input_transform = Compose(
     ]
 )
 
+# Ground truth alignment: the mask is resized to 512x1024 pixels using nearest-neighbour interpolation
 target_transform = Compose(
     [
         Resize((512, 1024), Image.NEAREST),
@@ -42,6 +46,8 @@ target_transform = Compose(
 
 
 def main():
+
+    # definition of input arguments
     parser = ArgumentParser()
     parser.add_argument(
         "--input",
@@ -92,11 +98,15 @@ def main():
 
     model = load_my_state_dict(model, torch.load(weightspath, map_location=lambda storage, loc: storage))
     print ("Model and weights LOADED successfully")
+
+    # Forward pass: the resized image, as a tensor, is passed to the model and a tensor of logits is returned
     model.eval()
     
+    # define the scructures for saving logits (necessary for temperature scaling)
     all_logits_to_save = []
     all_gts_to_save = []
     
+    # Anomaly score computation: we choose a method (via input) and campute a 2D anomaly score map
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
@@ -105,23 +115,22 @@ def main():
             result = model(images)
         # anomaly_result = 1.0 - np.max(result.squeeze(0).data.cpu().numpy(), axis=0)   
         if args.method == "msp":
-            # Maximum Softmax Probability
+            # MSP: maximum softmax probability (1- for anomaly detection)
             probs = torch.softmax(result, dim=1)
             msp, _ = torch.max(probs.squeeze(0), dim=0)
             anomaly_result = 1.0 - msp.data.cpu().numpy()
 
         elif args.method == "max_logit":
-            # Max Logit: il valore massimo dei logits (negato per avere score alto = anomalia)
+            # Max Logit: maximum value of logits (with minus for anomaly detection)
             anomaly_result = - np.max(result.squeeze(0).data.cpu().numpy(), axis=0)
 
         elif args.method == "max_entropy":
-            # Max Entropy: incertezza basata sulla distribuzione Shannon
+            # Max Entropy: uncertainty based on Shannon theory
             probs = torch.softmax(result, dim=1)
             entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
             anomaly_result = entropy.squeeze(0).data.cpu().numpy()
 
-        ######################################################################################################################
-        # SALVATAGGIO IMMAGINE DI DEBUG (prima immagine utile)
+        # Saving the heatmap of the first image with a detected anomaly
         if len(ood_gts_list) == 0: 
             print(f"Debug: {path}")
             map_normalized = cv2.normalize(anomaly_result, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -130,7 +139,7 @@ def main():
             cv2.imwrite(debug_name, heatmap_img)
             print(f"\n--- MAPPA DI DEBUG SALVATA COME {debug_name} ---")
             print("Guardala per capire cosa la rete sta marcando come anomalia!\n")
-        #################################################################################################################
+
 
         pathGT = path.replace("images", "labels_masks")                
         if "RoadObsticle21" in pathGT:
@@ -140,6 +149,7 @@ def main():
         if "RoadAnomaly" in pathGT:
            pathGT = pathGT.replace("jpg", "png")  
 
+        # Gound truth alignment: take the mask, resize them and adjust anomaly convention 
         mask = Image.open(pathGT)
         mask = target_transform(mask)
         ood_gts = np.array(mask)
@@ -176,6 +186,7 @@ def main():
     val_out = anomaly_scores[valid_mask]
     val_label = ood_gts[valid_mask]
 
+    # Metric accumulation: all valid pixels are used to compute the required metrics
     prc_auc = average_precision_score(val_label, val_out)
     fpr = fpr_at_95_tpr(val_out, val_label)
 
