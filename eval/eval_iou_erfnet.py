@@ -7,19 +7,19 @@ from io import BytesIO
 from argparse import ArgumentParser
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms.functional import resize, to_tensor
-from erfnet import ERFNet          # importo il modello ERFNet 
+from erfnet import ERFNet          # import the ERFNet model
 from iouEval import iouEval, getColorEntry
 
 
-# Definisco il numero di classi per l'IoU.
-# NUM_CLASSES = 20 perché la metrica considera 19 classi reali (trainId 0-18) più il void all'indice 19.
-# Il modello ERFNet è addestrato su 20 canali in uscita, l'ultimo viene ignorato nel calcolo dell'IoU.
+# Define the number of classes for IoU.
+# NUM_CLASSES = 20 because the metric considers 19 real classes (trainId 0-18) plus void at index 19.
+# The ERFNet model is trained on 20 output channels, the last one is ignored in IoU calculation.
 NUM_CLASSES = 20
 
 ##############################################################################
-# Mappatura da labelId originale di Cityscapes (0-255) a trainId (0-19).
-# Creo un array di 256 elementi, inizializzati tutti a 19 (void).
-# Poi sovrascrivo solo le posizioni corrispondenti alle 19 classi di interesse.
+# Mapping from original Cityscapes labelId (0-255) to trainId (0-19).
+# Create an array of 256 elements, all initialized to 19 (void).
+# Then overwrite only the positions corresponding to the 19 classes of interest.
 #########################################################################################
 label2train = np.full(256, 19, dtype=np.uint8)
 train_mapping = {
@@ -31,29 +31,29 @@ for lid, tid in train_mapping.items():
     label2train[lid] = tid
 
 #####################################################################################
-# Dataset personalizzato per leggere immagini ed etichette direttamente da file ZIP,
-# senza estrarli. Supporta split 'val', 'train', 'test' ecc.
-# A differenza della versione per EoMT, qui le immagini e le etichette vengono ridimensionate forzatamente a 512×1024 (formato standard per ERFNet su Cityscapes).
+# Custom dataset to read images and labels directly from ZIP files,
+# without extracting them. Supports splits 'val', 'train', 'test', etc.
+# Unlike the EoMT version, here images and labels are forcibly resized to 512×1024 (standard format for ERFNet on Cityscapes).
 class ZipCityscapesDataset(Dataset):
     def __init__(self, img_zip_path, lbl_zip_path, split='val'):
         self.split = split
-        # Apro i due file ZIP in modalità lettura
+        # Open the two ZIP files in read mode
         self.img_zip = zipfile.ZipFile(img_zip_path, 'r')
         self.lbl_zip = zipfile.ZipFile(lbl_zip_path, 'r')
 
-        # Costruisco il prefisso delle immagini per lo split richiesto, es. 'leftImg8bit/val/'
+        # Build the image prefix for the requested split, e.g. 'leftImg8bit/val/'
         img_prefix = f'leftImg8bit/{split}/'
         self.samples = []
-        # Scorro tutti i file all'interno dello ZIP delle immagini
+        # Iterate over all files inside the image ZIP
         for name in self.img_zip.namelist():
-            # Se il file è nella cartella giusta e termina con '_leftImg8bit.png'
+            # If the file is in the correct folder and ends with '_leftImg8bit.png'
             if name.startswith(img_prefix) and name.endswith('_leftImg8bit.png'):
-                # Costruisco il nome corrispondente dell'etichetta:
-                # sostituisco 'leftImg8bit' con 'gtFine' e cambio suffisso da '_leftImg8bit.png' a '_gtFine_labelIds.png'
+                # Build the corresponding label name:
+                # replace 'leftImg8bit' with 'gtFine' and change suffix from '_leftImg8bit.png' to '_gtFine_labelIds.png'
                 lbl_name = name.replace('leftImg8bit/', 'gtFine/').replace(
                     '_leftImg8bit.png', '_gtFine_labelIds.png'
                 )
-                # Se l'etichetta esiste nello ZIP delle etichette, aggiungo la coppia alla lista
+                # If the label exists in the label ZIP, add the pair to the list
                 if lbl_name in self.lbl_zip.NameToInfo:
                     self.samples.append((name, lbl_name))
 
@@ -63,23 +63,23 @@ class ZipCityscapesDataset(Dataset):
     def __getitem__(self, idx):
         img_name, lbl_name = self.samples[idx]
 
-        # Leggo i byte dell'immagine dallo ZIP e li converto in un'immagine PIL RGB
+        # Read the image bytes from the ZIP and convert to a PIL RGB image
         img_bytes = self.img_zip.read(img_name)
         image = Image.open(BytesIO(img_bytes)).convert('RGB')
 
-        # Leggo i byte dell'etichetta dallo ZIP e li converto in immagine PIL (in scala di grigi)
+        # Read the label bytes from the ZIP and convert to a PIL image (grayscale)
         lbl_bytes = self.lbl_zip.read(lbl_name)
         label = Image.open(BytesIO(lbl_bytes))
 
-        # Ridimensionamento a 512x1024 (formato standard per ERFNet su Cityscapes)
+        # Resize to 512x1024 (standard format for ERFNet on Cityscapes)
         image = resize(image, (512, 1024), interpolation=Image.BILINEAR)
         label = resize(label, (512, 1024), interpolation=Image.NEAREST)
 
-        # RECALL: to_tensor converte l'immagine in tensore float32 e divide automaticamente i pixel per 255 (porta in [0,1])
+        # RECALL: to_tensor converts the image to a float32 tensor and automatically divides pixels by 255 (scales to [0,1])
         image = to_tensor(image)                     # [3, 512, 1024] float32
 
-        # Converto l'etichetta in array numpy uint8, applico la mappatura labelId -> trainId,
-        # converto a tensore torch.long e aggiungo una dimensione per il canale (1, H, W)
+        # Convert label to uint8 numpy array, apply labelId -> trainId mapping,
+        # convert to torch.long tensor and add a channel dimension (1, H, W)
         label = np.array(label, dtype=np.uint8)
         label = label2train[label]
         label = torch.from_numpy(label).long().unsqueeze(0)  # [1, 512, 1024]
@@ -87,92 +87,92 @@ class ZipCityscapesDataset(Dataset):
         return image, label
 
 def main():
-    # Parsing degli argomenti da riga di comando
+    # Command line argument parsing
     parser = ArgumentParser()
     parser.add_argument('--loadDir', default='/content/MLME26/trained_models/',
-                        help='Directory dove si trovano i pesi')
+                        help='Directory where the weights are located')
     parser.add_argument('--loadWeights', default='erfnet_pretrained.pth',
-                        help='Nome del file dei pesi (es. erfnet_pretrained.pth)')
+                        help='Name of the weights file (e.g. erfnet_pretrained.pth)')
     parser.add_argument('--img-zip', required=True,
-                        help='Percorso al file ZIP delle immagini (leftImg8bit_trainvaltest.zip)')
+                        help='Path to the ZIP file of images (leftImg8bit_trainvaltest.zip)')
     parser.add_argument('--lbl-zip', required=True,
-                        help='Percorso al file ZIP delle etichette (gtFine_trainvaltest.zip)')
+                        help='Path to the ZIP file of labels (gtFine_trainvaltest.zip)')
     parser.add_argument('--subset', default='val',
-                        help='Split da valutare: val, train, test')
+                        help='Split to evaluate: val, train, test')
     parser.add_argument('--num-workers', type=int, default=2,
-                        help='Numero di processi per il DataLoader')
+                        help='Number of processes for the DataLoader')
     parser.add_argument('--batch-size', type=int, default=2,
-                        help='Dimensione del batch (ERFNet processa intere immagini, quindi può essere >1)')
+                        help='Batch size (ERFNet processes whole images, so can be >1)')
     parser.add_argument('--cpu', action='store_true',
-                        help='Forza l\'esecuzione su CPU anche se CUDA è disponibile')
+                        help='Force execution on CPU even if CUDA is available')
     args = parser.parse_args()
 
-    # Determino il dispositivo (CUDA se disponibile e non richiesto esplicitamente la CPU)
+    # Determine the device (CUDA if available and not explicitly requested CPU)
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
 
     #########################################################
-    # Istanzio il modello ERFNet con 20 classi
+    # Instantiate the ERFNet model with 20 classes
     ##############################################
     model = ERFNet(NUM_CLASSES)
     if not args.cpu:
         model = torch.nn.DataParallel(model).cuda()
 
-    # Costruisco il percorso completo del file dei pesi
+    # Build the full path to the weights file
     weightspath = os.path.join(args.loadDir, args.loadWeights)
-    # Carico lo state_dict 
+    # Load the state_dict
     state_dict = torch.load(weightspath, map_location='cpu')
 
-    # Funzione per caricare lo state_dict rimuovendo eventuale prefisso 'module.' presente nei checkpoint
+    # Function to load the state_dict by removing any 'module.' prefix present in checkpoints
     def load_my_state_dict(model, state_dict):
         own_state = model.state_dict()
         for name, param in state_dict.items():
             if name not in own_state:
-                # Se il nome inizia con 'module.', provo a rimuovere il prefisso
+                # If the name starts with 'module.', try to remove the prefix
                 if name.startswith("module."):
                     stripped_name = name.split("module.")[-1]
                     if stripped_name in own_state:
                         own_state[stripped_name].copy_(param)
                     else:
-                        print(f"{stripped_name} non trovato nel modello")
+                        print(f"{stripped_name} not found in model")
                 else:
-                    print(f"{name} non caricato")
+                    print(f"{name} not loaded")
                 continue
             else:
                 own_state[name].copy_(param)
         return model
 
     model = load_my_state_dict(model, state_dict)
-    model.eval()   # Imposto la modalità di valutazione 
-    print("Modello e pesi ERFNet caricati con successo")
+    model.eval()   # Set evaluation mode
+    print("ERFNet model and weights loaded successfully")
 
     ###########################################################
-    # Creazione del DataLoader utilizzando il dataset da ZIP
+    # Create DataLoader using the ZIP-based dataset
     dataset = ZipCityscapesDataset(args.img_zip, args.lbl_zip, split=args.subset)
     loader = DataLoader(dataset, batch_size=args.batch_size,
                         shuffle=False, num_workers=args.num_workers)
 
-    # Istanza della classe che calcola l'IoU (20 classi, ignore index 19)
+    # Instance of the class that computes IoU (20 classes, ignore index 19)
     iou_eval = iouEval(NUM_CLASSES)
 
-    # Ciclo di valutazione 
+    # Evaluation loop
     with torch.no_grad():
         for step, (images, labels) in enumerate(loader):
-            # Sposto immagini e etichette sul dispositivo
+            # Move images and labels to the device
             if not args.cpu:
                 images = images.cuda()
                 labels = labels.cuda()
 
-            # Forward dell'intera immagine (dimensioni 512x1024)
+            # Forward of the whole image (size 512x1024)
             outputs = model(images)                     # shape [B, 20, 512, 1024]
-            # Estraggo la classe con probabilità massima lungo la dimensione dei canali (dim=1)
-            # e aggiungo una dimensione per il canale (keepdim=False, poi unsqueeze)
+            # Extract the class with maximum probability along the channel dimension (dim=1)
+            # and add a channel dimension (keepdim=False, then unsqueeze)
             preds = outputs.max(dim=1)[1].unsqueeze(1)   # [B, 1, 512, 1024]
 
-            # Aggiorno la matrice di confusione nel valutatore IoU
+            # Update the confusion matrix in the IoU evaluator
             iou_eval.addBatch(preds, labels)
-            print(f"Processato batch {step}")
+            print(f"Processed batch {step}")
 
-    # Calcolo e stampa dei risultati IoU
+    # Compute and print IoU results
     iou_mean, iou_classes = iou_eval.getIoU()
 
     class_names = ['road', 'sidewalk', 'building', 'wall', 'fence',
