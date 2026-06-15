@@ -55,9 +55,9 @@ class AnomalyClassificationModule(lightning.LightningModule):
             weight_decay=self.weight_decay,
         )
 
-    # ---------------------------------------------------------
+
+    ################################################################################################
     # WINDOWING HELPER METHODS
-    # ---------------------------------------------------------
     def scale_img_size(self, size: tuple[int, int]):
         factor = max(self.img_size[0] / size[0], self.img_size[1] / size[1])
         return [round(s * factor) for s in size]
@@ -199,9 +199,8 @@ class AnomalyClassificationModule(lightning.LightningModule):
                 )
             })
 
-    # ---------------------------------------------------------
-    # TRAINING AND VALIDATION
-    # ---------------------------------------------------------
+    
+    #### TRAINING AND VALIDATION
     def training_step(self, batch, batch_idx):
         imgs, targets = batch
         if isinstance(imgs, (list, tuple)):
@@ -222,7 +221,7 @@ class AnomalyClassificationModule(lightning.LightningModule):
         
         loss = F.binary_cross_entropy_with_logits(reverted_logits, anomaly_masks)
         
-        # --- LOGGING ON WANDB ---
+        #LOGGING ON WANDB
         # If it is the first step of the current epoch and the logger is configured, log the plot
         if batch_idx == 0:
             try:
@@ -230,7 +229,7 @@ class AnomalyClassificationModule(lightning.LightningModule):
                 self._log_training_image(imgs[0].detach(), anomaly_masks[0].detach(), reverted_logits[0].detach())
             except Exception as e:
                 print(f"Errore durante il logging dell'immagine su wandb: {e}")
-        # ------------------------
+        ##############################################################################
         
         self.log("train_loss", loss, prog_bar=True)
         return loss

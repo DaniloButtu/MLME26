@@ -2,7 +2,6 @@ import os
 import sys
 import warnings
 
-# Ignoriamo il warning relativo a wandb.require
 warnings.filterwarnings("ignore", message=".*wandb.require.*")
 
 # Aggiungo i percorsi al sys.path
