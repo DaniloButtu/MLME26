@@ -114,8 +114,7 @@ class AnomalyClassificationModule(lightning.LightningModule):
 
     def revert_window_logits(self, crop_logits, origins, img_sizes):
         """
-        Ricostruisce l'immagine intera facendo la media (sums / counts) 
-        nelle zone di sovrapposizione dei crop 2D.
+        Reconstruct the original image from the crops logits and do the mean in the overlapping zones.
         """
         logit_sums, logit_counts = [], []
         for size in img_sizes:
