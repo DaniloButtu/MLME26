@@ -89,7 +89,7 @@ class EoMT(nn.Module):
         # 4. Anomaly logits (only when the head exists)
         #    Run upscaled_x through a per-pixel MLP -> (B, 1, H_up, W_up)
         if self.anomaly_head_enabled:
-            upscaled_x_permuted = upscaled_x.permute(0, 2, 3, 1)  # (B, H, W, C)
+            upscaled_x_permuted = upscaled_x.permute(0, 2, 3, 1)  # (B, H, W, embed_dim)
             anomaly_logits = self.anomaly_head(upscaled_x_permuted)  # (B, H, W, 1)
             anomaly_logits = anomaly_logits.permute(0, 3, 1, 2)       # (B, 1, H, W)
         else:
