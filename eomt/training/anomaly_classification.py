@@ -62,7 +62,7 @@ class AnomalyClassificationModule(lightning.LightningModule):
         factor = max(self.img_size[0] / size[0], self.img_size[1] / size[1])
         return [round(s * factor) for s in size]
 
-    def window_imgs(self, imgs, stride_ratio=0.5):
+    def window_imgs(self, imgs, stride_ratio=1):
         """
         Extracts overlapped crops using the sliding window 2D logic
         stride_ratio = 0.5 means that the window advances by half its size (50% overlap).
@@ -156,8 +156,7 @@ class AnomalyClassificationModule(lightning.LightningModule):
     @torch.no_grad()
     def _log_training_image(self, img, gt_mask, pred_logit):
         """
-        Genera un plot a 3 pannelli (Immagine, Ground Truth, Predizione) 
-        e lo carica su Weights & Biases.
+        W&B logging plots
         """
         # Convert the image in HWC uint8 (0-255) format
         img_np = img.clamp(0, 255).permute(1, 2, 0).cpu().numpy().astype('uint8')
